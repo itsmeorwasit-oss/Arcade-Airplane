@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sky Dash - Arcade Flight</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #0b0f19;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        canvas {
+            background: linear-gradient(to bottom, #1a1c2e, #283556, #634b66);
+            box-shadow: 0 0 30px rgba(0,0,0,0.7);
+            max-width: 100%;
+            max-height: 100%;
+        }
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.8);
+            z-index: 10;
+            transition: opacity 0.3s ease;
+        }
+        .hidden {
+            display: none !important;
+            opacity: 0;
+        }
+        h1 {
+            font-size: 4.5rem;
+            margin-bottom: 10px;
+            letter-spacing: 4px;
+            background: linear-gradient(45deg, #ff7675, #fdcb6e);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: float 3s ease-in-out infinite;
+        }
+        p {
+            font-size: 1.2rem;
+            margin-bottom: 30px;
+            color: #dfe6e9;
+        }
+        button {
+            padding: 14px 40px;
+            font-size: 1.4rem;
+            font-weight: bold;
+            color: #fff;
+            background: linear-gradient(to bottom, #00cec9, #0984e3);
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 5px 20px rgba(9, 132, 227, 0.4);
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+        button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 7px 25px rgba(0, 206, 201, 0.6);
+        }
+        button:active {
+            transform: scale(0.98);
+        }
+        #gameOverScreen h1 {
+            background: linear-gradient(45deg, #d63031, #e17055);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .stats {
+            font-size: 1.6rem;
+            margin-bottom: 25px;
+            text-align: center;
+            line-height: 1.6;
+        }
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-12px); }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+
+        <div id="startScreen" class="overlay">
+            <h1>SKY DASH</h1>
+            <p>Dodge obstacles and survive the shifting skies!</p>
+            <p style="font-size: 1rem; margin-top: -20px; margin-bottom: 25px; color: #b2bec3;">
+                Desktop: Up/Down Arrows or W/S Keys | Mobile: Touch & Hold to pull up
+            </p>
+            <button id="startBtn">START ENGINE</button>
+        </div>
+
+        <div id="gameOverScreen" class="overlay hidden">
+            <h1>SYSTEM CRASH</h1>
+            <div class="stats">
+                <div id="finalScore">Score: 0</div>
+                <div id="highScoreText" style="color: #fdcb6e;">High Score: 0</div>
+            </div>
+            <button id="restartBtn">REBOOT FLIGHT</button>
+        </div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    const startScreen = document.getElementById('startScreen');
+    const gameOverScreen = document.getElementById('gameOverScreen');
+    const startBtn = document.getElementById('startBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const finalScoreEl = document.getElementById('finalScore');
+    const highScoreEl = document.getElementById('highScoreText');
+
+    const TARGET_WIDTH = 960;
+    const TARGET_HEIGHT = 540;
+    canvas.width = TARGET_WIDTH;
+    canvas.height = TARGET_HEIGHT;
+
+    const STATES = { MENU: 0, PLAYING: 1, GAMEOVER: 2 };
+    let gameState = STATES.MENU;
+
+    let score = 0;
+    let highScore = localStorage.getItem('skyDash_highScore') || 0;
+    let keys = {};
+    let isTouching = false;
+    let lastTime = 0;
+    let spawnTimer = 0;
+    let difficultyMultiplier = 1.0;
+
+    let player;
+    let obstacles = [];
+    let particles = [];
+    let backgrounds = [];
+
+    window.addEventListener('keydown', (e) => { keys[e.key.toLowerCase()] = true; });
+    window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+    window.addEventListener('touchstart', (e) => { isTouching = true; if(gameState === STATES.PLAYING) e.preventDefault(); }, {passive: false});
+    window.addEventListener('touchend', () => { isTouching = false; });
+
+    function resizeCanvas() {
+        const containerWidth = window.innerWidth;
+        const containerHeight = window.innerHeight;
+        let w = containerWidth;
+        let h = containerWidth * (TARGET_HEIGHT / TARGET_WIDTH);
+
+        if (h > containerHeight) {
+            h = containerHeight;
+            w = containerHeight * (TARGET_WIDTH / TARGET_HEIGHT);
+        }
+        canvas.style.width = `${w}px`;
+        canvas.style.height = `${h}px`;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // --- Modern Stylized Jet Plane ---
+    class Player {
+        constructor() {
+            this.x = 120;
+            this.y = TARGET_HEIGHT / 2;
+            this.width = 65;
+            this.height = 25;
+            this.velocityY = 0;
+            this.acceleration = 0.7;
+            this.gravity = 0.45;
+            this.friction = 0.91;
+            this.maxSpeed = 8;
+            this.angle = 0;
+        }
+
+        update() {
+            if (keys['arrowup'] || keys['w'] || isTouching) {
+                this.velocityY -= this.acceleration;
+            } else if (keys['arrowdown'] || keys['s']) {
+                this.velocityY += this.acceleration;
+            } else {
+                this.velocityY += this.gravity;
+            }
+
+            this.velocityY *= this.friction;
+            if (this.velocityY > this.maxSpeed) this.velocityY = this.maxSpeed;
+            if (this.velocityY < -this.maxSpeed) this.velocityY = -this.maxSpeed;
+
+            this.y += this.velocityY;
+            this.angle = this.velocityY * 0.04;
+
+            if (this.y < 5) { this.y = 5; this.velocityY = 0; }
+            if (this.y > TARGET_HEIGHT - this.height - 5) { this.y = TARGET_HEIGHT - this.height - 5; this.velocityY = 0; }
+
+            // Active engine exhaust trail
+            if (Math.random() < 0.6) {
+                const trailColor = Math.random() > 0.4 ? '#ff7675' : '#fdcb6e';
+                particles.push(new Particle(this.x - 5, this.y + this.height/2, trailColor, -4, 0, 4));
+            }
+        }
+
+        draw() {
+            ctx.save();
+            ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
+            ctx.rotate(this.angle);
+
+            // Main Core Fuselage
+            ctx.fillStyle = '#dfe6e9';
+            ctx.beginPath();
+            ctx.moveTo(-this.width/2, -3);
+            ctx.lineTo(this.width/3, -6);
+            ctx.lineTo(this.width/2, 0); // Nose cone
+            ctx.lineTo(this.width/3, 6);
+            ctx.lineTo(-this.width/2, 4);
+            ctx.closePath();
+            ctx.fill();
+
+            // Accent Trim Panels
+            ctx.fillStyle = '#0984e3';
+            ctx.beginPath();
+            ctx.moveTo(-this.width/4, -4);
+            ctx.lineTo(this.width/4, -2);
+            ctx.lineTo(this.width/3, 3);
+            ctx.lineTo(-this.width/4, 3);
+            ctx.fill();
+
+            // Cockpit Canopy Glass
+            ctx.fillStyle = '#00cec9';
+            ctx.beginPath();
+            ctx.moveTo(this.width/8, -4);
+            ctx.ellipse(this.width/4, -2, 8, 4, Math.PI/7, 0, Math.PI*2);
+            ctx.fill();
+
+            // Swept Rear Fin
+            ctx.fillStyle = '#74b9ff';
+            ctx.beginPath();
+            ctx.moveTo(-this.width/2 + 5, -3);
+            ctx.lineTo(-this.width/2 - 5, -16);
+            ctx.lineTo(-this.width/4, -3);
+            ctx.closePath();
+            ctx.fill();
+
+            // Forward Wing Structure
+            ctx.fillStyle = '#0984e3';
+            ctx.beginPath();
+            ctx.moveTo(-this.width/8, 0);
+            ctx.lineTo(-this.width/3, 14);
+            ctx.lineTo(-this.width/6, 14);
+            ctx.lineTo(this.width/6, 0);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.restore();
+        }
+    }
+
+    // --- Dynamic Obstacles ---
+    class Obstacle {
+        constructor() {
+            this.types = ['BIRD', 'CLOUD', 'MINE'];
+            this.type = this.types[Math.floor(Math.random() * this.types.length)];
+            this.x = TARGET_WIDTH + 80;
+            this.y = Math.random() * (TARGET_HEIGHT - 120) + 40;
+            
+            // Base speed shifts higher over time via dynamic multiplier
+            this.speed = (Math.random() * 2 + 3.5) * difficultyMultiplier;
+
+            if (this.type === 'BIRD') {
+                this.width = 36; this.height = 24; this.color = '#2d3436';
+            } else if (this.type === 'CLOUD') {
+                this.width = 90; this.height = 50; this.color = 'rgba(116, 185, 255, 0.4)';
+                this.speed *= 0.75;
+            } else if (this.type === 'MINE') {
+                this.width = 26; this.height = 26; this.color = '#e17055';
+            }
+        }
+
+        update() {
+            this.x -= this.speed;
+        }
+
+        draw() {
+            ctx.fillStyle = this.color;
+            if (this.type === 'CLOUD') {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 25, 0, Math.PI*2);
+                ctx.arc(this.x + 30, this.y - 15, 30, 0, Math.PI*2);
+                ctx.arc(this.x + 60, this.y, 25, 0, Math.PI*2);
+                ctx.fill();
+            } else if (this.type === 'BIRD') {
+                ctx.strokeStyle = this.color;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                let flap = Math.sin(Date.now() * 0.012) * 9;
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(this.x + this.width/2, this.y - flap);
+                ctx.lineTo(this.x + this.width, this.y);
+                ctx.stroke();
+            } else if (this.type === 'MINE') {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.width/2, 0, Math.PI*2);
+                ctx.fill();
+                ctx.strokeStyle = '#d63031';
+                ctx.lineWidth = 2;
+                ctx.parent
+                ctx.beginPath();
+                ctx.moveTo(this.x - this.width, this.y); ctx.lineTo(this.x + this.width, this.y);
+                ctx.moveTo(this.x, this.y - this.height); ctx.lineTo(this.x, this.y + this.height);
+                ctx.stroke();
+            }
+        }
+
+        getBounds() {
+            if (this.type === 'CLOUD') {
+                return { x: this.x - 5, y: this.y - 30, width: this.width, height: this.height };
+            }
+            return { x: this.x - this.width/2, y: this.y - this.height/2, width: this.width, height: this.height };
+        }
+    }
+
+    class Particle {
+        constructor(x, y, color, speedX, speedY, size) {
+            this.x = x;
+            this.y = y;
+            this.color = color;
+            this.vx = speedX + (Math.random() - 0.5) * 2;
+            this.vy = speedY + (Math.random() - 0.5) * 2;
+            this.radius = Math.random() * size + 1;
+            this.alpha = 1;
+            this.decay = Math.random() * 0.02 + 0.02;
+        }
+
+        update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.alpha -= this.decay;
+        }
+
+        draw() {
+            ctx.save();
+            ctx.globalAlpha = this.alpha;
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    // --- Enhanced Horizon Parallax Background ---
+    class ParallaxLayer {
+        constructor(color, speed, heightModifier, variance, complexity) {
+            this.color = color;
+            this.speed = speed;
+            this.x = 0;
+            this.points = [];
+            this.step = 30;
+            
+            for (let i = 0; i <= TARGET_WIDTH / this.step + 3; i++) {
+                this.points.push({
+                    x: i * this.step,
+                    y: (TARGET_HEIGHT - heightModifier) + Math.sin(i * complexity) * variance
+                });
+            }
+        }
+
+        update() {
+            this.x -= this.speed;
+            if (this.x <= -this.step) {
+                this.x += this.step;
+                let first = this.points.shift();
+                first.x = this.points[this.points.length - 1].x + this.step;
+                this.points.push(first);
+            }
+        }
+
+        draw() {
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.moveTo(0, TARGET_HEIGHT);
+            
+            ctx.save();
+            ctx.translate(this.x, 0);
+            ctx.lineTo(0, this.points[0].y);
+            for (let p of this.points) {
+                ctx.lineTo(p.x, p.y);
+            }
+            ctx.lineTo(this.points[this.points.length-1].x + 100, TARGET_HEIGHT);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    function initGame() {
+        score = 0;
+        difficultyMultiplier = 1.0;
+        spawnTimer = 0;
+        obstacles = [];
+        particles = [];
+        
+        player = new Player();
+        
+        // Polished color layers matching a sunrise sky gradient profile
+        backgrounds = [
+            new ParallaxLayer('#2c2541', 0.4, 240, 20, 0.3), // Deep mountain ridge
+            new ParallaxLayer('#483b5c', 1.0, 150, 35, 0.4), // Mid-ground range
+            new ParallaxLayer('#74546a', 2.2, 70, 15, 0.6)   // Close proximity hills
+        ];
+    }
+
+    function createExplosion(x, y) {
+        const colors = ['#e17055', '#ff7675', '#fdcb6e', '#636e72'];
+        for (let i = 0; i < 45; i++) {
+            particles.push(new Particle(
+                x, y, 
+                colors[Math.floor(Math.random() * colors.length)], 
+                (Math.random() - 0.5) * 9, 
+                (Math.random() - 0.5) * 9, 
+                7
+            ));
+        }
+    }
+
+    function checkCollision(rect1, rect2) {
+        return rect1.x < rect2.x + rect2.width &&
+               rect1.x + rect1.width > rect2.x &&
+               rect1.y < rect2.y + rect2.height &&
+               rect1.y + rect1.height > rect2.y;
+    }
+
+    function gameLoop(timestamp) {
+        let deltaTime = timestamp - lastTime;
+        if (!deltaTime) deltaTime = 0;
+        lastTime = timestamp;
+
+        ctx.clearRect(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+
+        // Render ambient atmospheric backdrop
+        backgrounds.forEach(bg => {
+            if (gameState === STATES.PLAYING) bg.update();
+            bg.draw();
+        });
+
+        if (gameState === STATES.PLAYING) {
+            score += 0.05;
+
+            // --- Progression Difficulty Scaler ---
+            // Increases the scaling factor continuously based on current total points
+            difficultyMultiplier = 1.0 + (score * 0.0035);
+
+            spawnTimer += 1;
+            // Spawning rate scales dynamically; frames required down to a floor cap of 24 frames
+            let dynamicSpawnInterval = Math.max(24, 75 - (score * 0.08));
+            
+            if (spawnTimer > dynamicSpawnInterval) {
+                obstacles.push(new Obstacle());
+                spawnTimer = 0;
+            }
+
+            player.update();
+            player.draw();
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                obstacles[i].update();
+                obstacles[i].draw();
+
+                if (obstacles[i].x < -120) {
+                    obstacles.splice(i, 1);
+                    continue;
+                }
+
+                if (checkCollision(player, obstacles[i].getBounds())) {
+                    createExplosion(player.x + player.width/2, player.y + player.height/2);
+                    gameState = STATES.GAMEOVER;
+                    
+                    if (Math.floor(score) > highScore) {
+                        highScore = Math.floor(score);
+                        localStorage.setItem('skyDash_highScore', highScore);
+                    }
+
+                    finalScoreEl.innerText = `Score: ${Math.floor(score)}`;
+                    highScoreEl.innerText = `High Score: ${highScore}`;
+                    gameOverScreen.classList.remove('hidden');
+                }
+            }
+        }
+
+        // Particle handler processing run
+        for (let i = particles.length - 1; i >= 0; i--) {
+            particles[i].update();
+            particles[i].draw();
+            if (particles[i].alpha <= 0) particles.splice(i, 1);
+        }
+
+        // GUI Overlay score stats tracking
+        if (gameState === STATES.PLAYING) {
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 24px Arial';
+            ctx.fillText(`SCORE: ${Math.floor(score)}`, 25, 45);
+            ctx.fillStyle = '#fdcb6e';
+            ctx.fillText(`HIGH: ${highScore}`, 25, 75);
+            
+            // Dynamic threat-level alert UI indicator
+            ctx.fillStyle = 'rgba(255,255,255,0.4)';
+            ctx.font = '14px Arial';
+            ctx.fillText(`THREAT LEVEL: x${difficultyMultiplier.toFixed(1)}`, 25, 105);
+        }
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    startBtn.addEventListener('click', () => {
+        startScreen.classList.add('hidden');
+        initGame();
+        gameState = STATES.PLAYING;
+    });
+
+    restartBtn.addEventListener('click', () => {
+        gameOverScreen.classList.add('hidden');
+        initGame();
+        gameState = STATES.PLAYING;
+    });
+
+    initGame();
+    requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
+
